@@ -7,6 +7,7 @@
 import { OAuth2Client, Credentials } from 'google-auth-library';
 import * as http from 'http';
 import url from 'url';
+import * as readline from 'readline';
 import crypto from 'crypto';
 import * as net from 'net';
 import open from 'open';
@@ -65,12 +66,20 @@ export async function getOauthClient(): Promise<OAuth2Client> {
 
   const webLogin = await authWithWeb(client);
 
-  console.log(
-    `\n\nCode Assist login required.\n` +
-      `Attempting to open authentication page in your browser.\n` +
-      `Otherwise navigate to:\n\n${webLogin.authUrl}\n\n`,
-  );
-  await open(webLogin.authUrl);
+  if (process.env.HEADLESS_LOGIN === 'true') {
+    console.log(
+      `\n\nCode Assist login required for headless mode.\n` +
+        `Please open the following URL in your browser:\n\n${webLogin.authUrl}\n\n` +
+        `After authorizing, copy the code provided by Google and paste it below.`,
+    );
+  } else {
+    console.log(
+      `\n\nCode Assist login required.\n` +
+        `Attempting to open authentication page in your browser.\n` +
+        `If the browser does not open, please navigate to:\n\n${webLogin.authUrl}\n\n`,
+    );
+    await open(webLogin.authUrl);
+  }
   console.log('Waiting for authentication...');
 
   await webLogin.loginCompletePromise;
@@ -79,63 +88,122 @@ export async function getOauthClient(): Promise<OAuth2Client> {
 }
 
 async function authWithWeb(client: OAuth2Client): Promise<OauthWebLogin> {
-  //const port = await getAvailablePort();
-  const port = 8081;
-  const redirectUri = `http://localhost:${port}/oauth2callback`;
   const state = crypto.randomBytes(32).toString('hex');
-  const authUrl: string = client.generateAuthUrl({
-    redirect_uri: redirectUri,
-    access_type: 'offline',
-    scope: OAUTH_SCOPE,
-    state,
-  });
 
-  const loginCompletePromise = new Promise<void>((resolve, reject) => {
-    const server = http.createServer(async (req, res) => {
-      try {
-        if (req.url!.indexOf('/oauth2callback') === -1) {
-          res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
-          res.end();
-          reject(new Error('Unexpected request: ' + req.url));
+  if (process.env.HEADLESS_LOGIN === 'true') {
+    const redirectUri = 'urn:ietf:wg:oauth:2.0:oob';
+    const authUrl: string = client.generateAuthUrl({
+      redirect_uri: redirectUri,
+      access_type: 'offline',
+      scope: OAUTH_SCOPE,
+      state, // Recommended for oob flow as well to prevent CSRF
+    });
+
+    const loginCompletePromise = new Promise<void>((resolve, reject) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      rl.question('Enter the authorization code: ', async (code) => {
+        rl.close();
+        if (!code) {
+          return reject(new Error('No authorization code provided.'));
         }
-        // acquire the code from the querystring, and close the web server.
-        const qs = new url.URL(req.url!, 'http://localhost:3000').searchParams;
-        if (qs.get('error')) {
-          res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
-          res.end();
-
-          reject(new Error(`Error during authentication: ${qs.get('error')}`));
-        } else if (qs.get('state') !== state) {
-          res.end('State mismatch. Possible CSRF attack');
-
-          reject(new Error('State mismatch. Possible CSRF attack'));
-        } else if (qs.get('code')) {
+        try {
           const { tokens } = await client.getToken({
-            code: qs.get('code')!,
-            redirect_uri: redirectUri,
+            code: code.trim(),
+            redirect_uri: redirectUri, // Must match the one used in generateAuthUrl
           });
           client.setCredentials(tokens);
           await cacheCredentials(client.credentials);
-
-          res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_SUCCESS_URL });
-          res.end();
           resolve();
-        } else {
-          reject(new Error('No code found in request'));
+        } catch (e) {
+          reject(
+            new Error(`Error exchanging authorization code: ${(e as Error).message}`),
+          );
         }
-      } catch (e) {
-        reject(e);
-      } finally {
-        server.close();
-      }
+      });
     });
-    server.listen(port);
-  });
 
-  return {
-    authUrl,
-    loginCompletePromise,
-  };
+    return {
+      authUrl,
+      loginCompletePromise,
+    };
+  } else {
+    //const port = await getAvailablePort();
+    const port = 8081; // Using fixed port as in original code for now
+    const redirectUri = `http://localhost:${port}/oauth2callback`;
+    const authUrl: string = client.generateAuthUrl({
+      redirect_uri: redirectUri,
+      access_type: 'offline',
+      scope: OAUTH_SCOPE,
+      state,
+    });
+
+    const loginCompletePromise = new Promise<void>((resolve, reject) => {
+      const server = http.createServer(async (req, res) => {
+        try {
+          if (!req.url || req.url.indexOf('/oauth2callback') === -1) {
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
+            res.end();
+            return reject(new Error('Unexpected request: ' + req.url));
+          }
+          const qs = new url.URL(
+            req.url,
+            `http://localhost:${port}`,
+          ).searchParams;
+          if (qs.get('error')) {
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
+            res.end();
+            return reject(
+              new Error(`Error during authentication: ${qs.get('error')}`),
+            );
+          } else if (qs.get('state') !== state) {
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL }); // Or a specific error page
+            res.end('State mismatch. Possible CSRF attack.');
+            return reject(new Error('State mismatch. Possible CSRF attack.'));
+          } else if (qs.get('code')) {
+            const { tokens } = await client.getToken({
+              code: qs.get('code')!,
+              redirect_uri: redirectUri,
+            });
+            client.setCredentials(tokens);
+            await cacheCredentials(client.credentials);
+
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_SUCCESS_URL });
+            res.end();
+            resolve();
+          } else {
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
+            res.end();
+            reject(new Error('No code found in request'));
+          }
+        } catch (e) {
+          // Ensure response is sent before rejecting if possible
+          if (!res.headersSent) {
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
+            res.end();
+          }
+          reject(e);
+        } finally {
+          server.close();
+        }
+      });
+      server.on('error', (e) => {
+        // Handle server errors (e.g., port already in use)
+        reject(new Error(`HTTP server error: ${e.message}`));
+        server.close();
+      });
+      server.listen(port, () => {
+        // Server is listening, ready for OAuth callback
+      });
+    });
+
+    return {
+      authUrl,
+      loginCompletePromise,
+    };
+  }
 }
 
 export function getAvailablePort(): Promise<number> {
