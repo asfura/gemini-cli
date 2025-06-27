@@ -149,6 +149,8 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
     handleAuthHighlight,
     isAuthenticating,
     cancelAuthentication,
+    headlessAuthUrl, // Added destructuring
+    submitHeadlessCode, // Added destructuring
   } = useAuthCommand(settings, setAuthError, config);
 
   useEffect(() => {
