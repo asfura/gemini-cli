@@ -100,8 +100,12 @@ export async function createContentGeneratorConfig(
   return contentGeneratorConfig;
 }
 
+// Import the main Config type
+import type { Config as MainConfig } from '../config/config.js';
+
 export async function createContentGenerator(
-  config: ContentGeneratorConfig,
+  contentGenConfig: ContentGeneratorConfig,
+  mainConfig: MainConfig, // Add MainConfig parameter
 ): Promise<ContentGenerator> {
   const version = process.env.CLI_VERSION || process.version;
   const httpOptions = {
@@ -109,8 +113,9 @@ export async function createContentGenerator(
       'User-Agent': `GeminiCLI/${version} (${process.platform}; ${process.arch})`,
     },
   };
-  if (config.authType === AuthType.LOGIN_WITH_GOOGLE_PERSONAL) {
-    return createCodeAssistContentGenerator(httpOptions, config.authType);
+  if (contentGenConfig.authType === AuthType.LOGIN_WITH_GOOGLE_PERSONAL) {
+    // Pass the mainConfig down to createCodeAssistContentGenerator
+    return createCodeAssistContentGenerator(httpOptions, contentGenConfig.authType, mainConfig);
   }
 
   if (

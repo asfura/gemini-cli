@@ -48,16 +48,38 @@ const CREDENTIAL_FILENAME = 'oauth_creds.json';
  * as well as a promise that will resolve when the credentials have
  * been refreshed (or which throws error when refreshing credentials failed).
  */
-export interface OauthWebLogin {
+
+/**
+ * Represents the state and necessary functions for a headless authentication step.
+ * - `type`: Indicates the nature of the step, e.g., 'NEEDS_CODE'.
+ * - `authUrl`: The URL the user needs to open in their browser.
+ * - `exchangeCodeFunction`: A function that takes the user-provided code
+ *   and completes the authentication, returning a Promise that resolves on
+ *   success or rejects on error.
+ */
+export interface HeadlessAuthStep {
+  type: 'NEEDS_CODE';
   authUrl: string;
-  loginCompletePromise: Promise<void>;
+  exchangeCodeFunction: (code: string) => Promise<void>;
 }
 
-export async function getOauthClient(): Promise<OAuth2Client> {
+export interface OauthWebLogin {
+  authUrl: string; // For non-headless, this is the URL to open. For headless, it's also provided here and in headlessStep.
+  loginCompletePromise: Promise<void>;
+  headlessStep?: HeadlessAuthStep; // If present, CLI should use this for headless flow.
+}
+
+// Import Config type for the new parameter
+import type { Config } from '../config/config.js';
+
+export async function getOauthClient(config: Config): Promise<OAuth2Client> {
   const client = new OAuth2Client({
     clientId: OAUTH_CLIENT_ID,
     clientSecret: OAUTH_CLIENT_SECRET,
   });
+
+  // Ensure headless step is cleared if not taking the authWithWeb path
+  config.currentHeadlessAuthStep = undefined;
 
   if (await loadCachedCredentials(client)) {
     // Found valid cached credentials.
@@ -65,22 +87,28 @@ export async function getOauthClient(): Promise<OAuth2Client> {
   }
 
   const webLogin = await authWithWeb(client);
+  config.currentHeadlessAuthStep = webLogin.headlessStep; // Set headlessStep on config
 
-  if (process.env.HEADLESS_LOGIN === 'true') {
-    console.log(
-      `\n\nCode Assist login required for headless mode.\n` +
-        `Please open the following URL in your browser:\n\n${webLogin.authUrl}\n\n` +
-        `After authorizing, copy the code provided by Google and paste it below.`,
-    );
-  } else {
+  // If not in headless mode (or if headless mode doesn't require special CLI handling before this point)
+  // and webLogin.headlessStep is not set (or we decide CLI handles all headless messaging)
+  if (!webLogin.headlessStep) {
     console.log(
       `\n\nCode Assist login required.\n` +
         `Attempting to open authentication page in your browser.\n` +
         `If the browser does not open, please navigate to:\n\n${webLogin.authUrl}\n\n`,
     );
     await open(webLogin.authUrl);
+    console.log('Waiting for authentication...');
+  } else {
+    // For headless mode, the CLI will now use webLogin.headlessStep to provide instructions.
+    // A generic "Waiting for authentication..." might still be applicable after CLI shows URL / prompts for code.
+    // However, the actual prompt for code and URL display is deferred to the CLI.
+    // We might want a different message here or let CLI handle all messages.
+    // For now, let's assume CLI will show "Waiting for authentication..." if it needs to after its part.
+    // Or, if the CLI immediately acts on headlessStep, this log might be shown *before* CLI prompts.
+    // Let's refine this based on CLI behavior. For now, keeping a general waiting message.
+    console.log('Authentication process initiated. Follow CLI prompts if in headless mode.');
   }
-  console.log('Waiting for authentication...');
 
   await webLogin.loginCompletePromise;
 
@@ -92,42 +120,52 @@ async function authWithWeb(client: OAuth2Client): Promise<OauthWebLogin> {
 
   if (process.env.HEADLESS_LOGIN === 'true') {
     const redirectUri = 'urn:ietf:wg:oauth:2.0:oob';
-    const authUrl: string = client.generateAuthUrl({
+    const authUrlString: string = client.generateAuthUrl({
       redirect_uri: redirectUri,
       access_type: 'offline',
       scope: OAUTH_SCOPE,
-      state, // Recommended for oob flow as well to prevent CSRF
+      state,
     });
 
+    // For headless flow, the loginCompletePromise is controlled externally via exchangeCodeFunction
+    let resolveLoginPromise: () => void;
+    let rejectLoginPromise: (reason?: any) => void;
     const loginCompletePromise = new Promise<void>((resolve, reject) => {
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-      });
-      rl.question('Enter the authorization code: ', async (code) => {
-        rl.close();
-        if (!code) {
-          return reject(new Error('No authorization code provided.'));
-        }
-        try {
-          const { tokens } = await client.getToken({
-            code: code.trim(),
-            redirect_uri: redirectUri, // Must match the one used in generateAuthUrl
-          });
-          client.setCredentials(tokens);
-          await cacheCredentials(client.credentials);
-          resolve();
-        } catch (e) {
-          reject(
-            new Error(`Error exchanging authorization code: ${(e as Error).message}`),
-          );
-        }
-      });
+      resolveLoginPromise = resolve;
+      rejectLoginPromise = reject;
     });
+
+    const exchangeCodeFunction = async (code: string): Promise<void> => {
+      if (!code || code.trim() === '') {
+        const err = new Error('No authorization code provided.');
+        rejectLoginPromise(err);
+        throw err;
+      }
+      try {
+        const { tokens } = await client.getToken({
+          code: code.trim(),
+          redirect_uri: redirectUri, // Must match the one used in generateAuthUrl
+        });
+        client.setCredentials(tokens);
+        await cacheCredentials(client.credentials);
+        resolveLoginPromise();
+      } catch (e) {
+        const err = new Error(
+          `Error exchanging authorization code: ${(e as Error).message}`,
+        );
+        rejectLoginPromise(err);
+        throw err;
+      }
+    };
 
     return {
-      authUrl,
+      authUrl: authUrlString,
       loginCompletePromise,
+      headlessStep: {
+        type: 'NEEDS_CODE',
+        authUrl: authUrlString,
+        exchangeCodeFunction,
+      },
     };
   } else {
     //const port = await getAvailablePort();

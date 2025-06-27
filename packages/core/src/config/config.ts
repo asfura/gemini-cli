@@ -166,6 +166,7 @@ export class Config {
   private readonly extensionContextFilePaths: string[];
   private modelSwitchedDuringSession: boolean = false;
   flashFallbackHandler?: FlashFallbackHandler;
+  currentHeadlessAuthStep?: HeadlessAuthStep; // Added to store headless step info
 
   constructor(params: ConfigParameters) {
     this.sessionId = params.sessionId;
@@ -239,6 +240,7 @@ export class Config {
     // Temporarily clear contentGeneratorConfig to prevent getModel() from returning
     // the previous session's model (which might be Flash)
     this.contentGeneratorConfig = undefined!;
+    this.currentHeadlessAuthStep = undefined; // Clear any previous headless step
 
     const contentConfig = await createContentGeneratorConfig(
       modelToUse,
@@ -249,7 +251,7 @@ export class Config {
     const gc = new GeminiClient(this);
     this.geminiClient = gc;
     this.toolRegistry = await createToolRegistry(this);
-    await gc.initialize(contentConfig);
+    await gc.initialize(contentConfig); // This will now set currentHeadlessAuthStep if needed
     this.contentGeneratorConfig = contentConfig;
 
     // Reset the session flag since we're explicitly changing auth and using default model

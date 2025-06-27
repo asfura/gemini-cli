@@ -35,6 +35,7 @@ import { Footer } from './components/Footer.js';
 import { ThemeDialog } from './components/ThemeDialog.js';
 import { AuthDialog } from './components/AuthDialog.js';
 import { AuthInProgress } from './components/AuthInProgress.js';
+import { HeadlessAuthPrompt } from './components/HeadlessAuthPrompt.js'; // Import new component
 import { EditorSettingsDialog } from './components/EditorSettingsDialog.js';
 import { Colors } from './colors.js';
 import { Help } from './components/Help.js';
@@ -680,15 +681,23 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
                 terminalWidth={mainAreaWidth}
               />
             </Box>
-          ) : isAuthenticating ? (
+          ) : headlessAuthUrl ? ( // Check for headlessAuthUrl first
+            <HeadlessAuthPrompt
+              authUrl={headlessAuthUrl}
+              onSubmitCode={submitHeadlessCode}
+              onCancel={cancelAuthentication} // useAuthCommand.cancelAuthentication handles state clearing
+              errorMessage={authError}
+              isAuthenticating={isAuthenticating} // Pass isAuthenticating for the "Verifying code..." message
+            />
+          ) : isAuthenticating ? ( // Generic spinner, only if not in headless prompt
             <AuthInProgress
               onTimeout={() => {
                 setAuthError('Authentication timed out. Please try again.');
-                cancelAuthentication();
+                cancelAuthentication(); // This will now also clear headless state
                 openAuthDialog();
               }}
             />
-          ) : isAuthDialogOpen ? (
+          ) : isAuthDialogOpen ? ( // AuthDialog, only if not in headless prompt
             <Box flexDirection="column">
               <AuthDialog
                 onSelect={handleAuthSelect}
