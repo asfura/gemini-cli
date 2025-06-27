@@ -7,11 +7,6 @@ The Gemini CLI requires you to authenticate with Google's AI services. On initia
     - Use this option to log in with your google account.
     - During initial startup, Gemini CLI will direct you to a webpage for authentication. Once authenticated, your credentials will be cached locally so the web login can be skipped on subsequent runs.
     - Note that the web login must be done in a browser that can communicate with the machine Gemini CLI is being run from. (Specifically, the browser will be redirected to a localhost url that Gemini CLI will be listening on).
-    - **Using Device Code Flow (for headless environments):** If you are running Gemini CLI in an environment without a browser (e.g., a remote server or Codespaces), you can use the device code flow. To enable this, set the `GEMINI_AUTH_MODE` environment variable to `device`:
-      ```bash
-      export GEMINI_AUTH_MODE="device"
-      ```
-      When you run the CLI, it will display a URL and a code. You'll need to open this URL in a browser on another device (like your laptop or phone) and enter the code to authorize the CLI.
     - <a id="workspace-gca">Users may have to specify a GOOGLE_CLOUD_PROJECT if:</a>
       1. You have a Google Workspace account. Google Workspace is a paid service for businesses and organizations that provides a suite of productivity tools, including a custom email domain (e.g. your-name@your-company.com), enhanced security features, and administrative controls. These accounts are often managed by an employer or school.
       2. You are a licensed Code Assist user. This can happen if you have previously purchased a Code Assist license or have acquired one through Google Developer Program.

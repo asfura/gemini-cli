@@ -12,7 +12,6 @@ import * as net from 'net';
 import open from 'open';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { clear } from 'node:console';
 import * as os from 'os';
 
 //  OAuth Client ID used to initiate OAuth2Client class.
@@ -53,9 +52,7 @@ export interface OauthWebLogin {
   loginCompletePromise: Promise<void>;
 }
 
-export async function getOauthClient(
-  useDeviceCodeFlow = false,
-): Promise<OAuth2Client> {
+export async function getOauthClient(): Promise<OAuth2Client> {
   const client = new OAuth2Client({
     clientId: OAUTH_CLIENT_ID,
     clientSecret: OAUTH_CLIENT_SECRET,
@@ -66,90 +63,19 @@ export async function getOauthClient(
     return client;
   }
 
-  if (useDeviceCodeFlow) {
-    await authWithDeviceCode(client);
-  } else {
-    const webLogin = await authWithWeb(client);
-
-    console.log(
-      `\n\nCode Assist login required.\n` +
-        `Attempting to open authentication page in your browser.\n` +
-        `Otherwise navigate to:\n\n${webLogin.authUrl}\n\n`,
-    );
-    await open(webLogin.authUrl);
-    console.log('Waiting for authentication...');
-
-    await webLogin.loginCompletePromise;
-  }
-
-  return client;
-}
-
-async function authWithDeviceCode(client: OAuth2Client): Promise<void> {
-  const deviceCodeResponse = await client.getDeviceCode({
-    scope: OAUTH_SCOPE.join(' '),
-  });
+  const webLogin = await authWithWeb(client);
 
   console.log(
     `\n\nCode Assist login required.\n` +
-      `Open this URL in your browser:\n\n` +
-      `${deviceCodeResponse.data.verification_url}\n\n` +
-      `And enter this code:\n\n` +
-      `${deviceCodeResponse.data.user_code}\n\n`,
+      `Attempting to open authentication page in your browser.\n` +
+      `Otherwise navigate to:\n\n${webLogin.authUrl}\n\n`,
   );
+  await open(webLogin.authUrl);
+  console.log('Waiting for authentication...');
 
-  let attempts = 0;
-  const maxAttempts =
-    deviceCodeResponse.data.expires_in / deviceCodeResponse.data.interval;
-  const interval = deviceCodeResponse.data.interval * 1000; // Convert to milliseconds
+  await webLogin.loginCompletePromise;
 
-  return new Promise((resolve, reject) => {
-    const poll = async () => {
-      attempts++;
-      if (attempts > maxAttempts) {
-        reject(new Error('Authentication timed out.'));
-        return;
-      }
-
-      try {
-        const tokenResponse = await client.getToken({
-          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-          client_id: OAUTH_CLIENT_ID,
-          client_secret: OAUTH_CLIENT_SECRET,
-          code: deviceCodeResponse.data.device_code, // device_code from previous step
-        });
-        client.setCredentials(tokenResponse.tokens);
-        await cacheCredentials(client.credentials);
-        console.log('Authentication successful!');
-        resolve();
-      } catch (error: any) {
-        if (
-          error.response &&
-          error.response.data &&
-          error.response.data.error === 'authorization_pending'
-        ) {
-          // Authorization is pending, continue polling
-          setTimeout(poll, interval);
-        } else if (
-          error.response &&
-          error.response.data &&
-          error.response.data.error === 'slow_down'
-        ) {
-          // Slow down polling
-          setTimeout(poll, interval * 2); // Double the interval
-        } else {
-          // Other error, reject the promise
-          reject(
-            new Error(
-              `Error during authentication: ${error.response?.data?.error_description || error.message}`,
-            ),
-          );
-        }
-      }
-    };
-
-    setTimeout(poll, interval);
-  });
+  return client;
 }
 
 async function authWithWeb(client: OAuth2Client): Promise<OauthWebLogin> {

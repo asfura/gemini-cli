@@ -33,7 +33,6 @@ import {
   sessionId,
   logUserPrompt,
   AuthType,
-  getOauthClient,
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from './config/auth.js';
 import { setMaxSizedBoxDebugging } from './ui/components/shared/MaxSizedBox.js';
@@ -147,28 +146,6 @@ export async function main() {
           if (err) {
             throw new Error(err);
           }
-          // Check for device flow mode
-          const useDeviceFlow =
-            process.env.GEMINI_AUTH_MODE === 'device' &&
-            settings.merged.selectedAuthType ===
-              AuthType.LOGIN_WITH_GOOGLE_PERSONAL;
-          if (useDeviceFlow) {
-            // Directly use getOauthClient with device flow enabled
-            // This will prompt the user with a code and URL
-            console.log(
-              'Using device flow for authentication. Please follow the instructions below.',
-            );
-            await getOauthClient(true); // true for useDeviceCodeFlow
-            // After successful device flow, we might not need to call config.refreshAuth
-            // if getOauthClient already caches the token appropriately.
-            // However, refreshAuth might do more than just fetching tokens (e.g., setting up client).
-            // For now, let's assume getOauthClient handles caching and refreshAuth can proceed.
-            // If config.refreshAuth tries to redo the web flow, this needs adjustment.
-            // It's possible config.refreshAuth itself needs to be aware of the auth mode.
-          }
-          // We still call refreshAuth as it might initialize other parts of the config
-          // or handle other auth types. If LOGIN_WITH_GOOGLE_PERSONAL is selected
-          // and device flow was used, refreshAuth should ideally pick up the cached token.
           await config.refreshAuth(settings.merged.selectedAuthType);
         } catch (err) {
           console.error('Error authenticating:', err);
