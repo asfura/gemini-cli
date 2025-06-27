@@ -26,6 +26,10 @@ vi.mock('google-auth-library');
 vi.mock('http');
 vi.mock('open');
 vi.mock('crypto');
+vi.mock('console', () => ({
+  log: vi.fn(),
+  error: vi.fn(),
+}));
 
 describe('oauth2', () => {
   let tempHomeDir: string;
@@ -126,5 +130,162 @@ describe('oauth2', () => {
     const tokenPath = path.join(tempHomeDir, '.gemini', 'oauth_creds.json');
     const tokenData = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
     expect(tokenData).toEqual(mockTokens);
+  });
+
+  it('should perform a device code login and succeed', async () => {
+    const mockDeviceCodeResponse = {
+      data: {
+        device_code: 'test-device-code',
+        user_code: 'TEST-USER-CODE',
+        verification_url: 'https://example.com/device',
+        expires_in: 1800, // 30 minutes
+        interval: 1, // 1 second, to speed up test
+      },
+    };
+    const mockTokens = {
+      access_token: 'test-device-access-token',
+      refresh_token: 'test-device-refresh-token',
+    };
+
+    const mockGetDeviceCode = vi.fn().mockResolvedValue(mockDeviceCodeResponse);
+    const mockGetToken = vi
+      .fn()
+      .mockRejectedValueOnce({
+        response: { data: { error: 'authorization_pending' } },
+      }) // First poll: pending
+      .mockResolvedValueOnce({ tokens: mockTokens }); // Second poll: success
+
+    const mockSetCredentials = vi.fn();
+    const mockOAuth2ClientInstance = {
+      getDeviceCode: mockGetDeviceCode,
+      getToken: mockGetToken,
+      setCredentials: mockSetCredentials,
+      credentials: mockTokens, // Simulate credentials being set
+    } as unknown as OAuth2Client;
+
+    vi.mocked(OAuth2Client).mockImplementation(
+      () => mockOAuth2ClientInstance,
+    );
+    vi.spyOn(global, 'setTimeout').mockImplementation((fn) => {
+      fn();
+      return 0 as unknown as NodeJS.Timeout; // Return a dummy timeout ID
+    });
+
+    const client = await getOauthClient(true); // true for useDeviceCodeFlow
+
+    expect(client).toBe(mockOAuth2ClientInstance);
+    expect(mockGetDeviceCode).toHaveBeenCalledWith({
+      scope: expect.any(String),
+    });
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining(mockDeviceCodeResponse.data.verification_url),
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining(mockDeviceCodeResponse.data.user_code),
+    );
+    expect(mockGetToken).toHaveBeenCalledTimes(2);
+    expect(mockSetCredentials).toHaveBeenCalledWith(mockTokens);
+    expect(console.log).toHaveBeenCalledWith('Authentication successful!');
+
+    // Verify credentials caching
+    const tokenPath = path.join(tempHomeDir, '.gemini', 'oauth_creds.json');
+    const tokenData = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
+    expect(tokenData).toEqual(mockTokens);
+
+    // Restore setTimeout
+    vi.mocked(global.setTimeout).mockRestore();
+  });
+
+  it('should handle device code login timeout', async () => {
+    const mockDeviceCodeResponse = {
+      data: {
+        device_code: 'test-device-code-timeout',
+        user_code: 'TEST-USER-CODE-TIMEOUT',
+        verification_url: 'https://example.com/device_timeout',
+        expires_in: 2, // Short expiry for testing timeout
+        interval: 1, // 1 second interval
+      },
+    };
+
+    const mockGetDeviceCode = vi.fn().mockResolvedValue(mockDeviceCodeResponse);
+    // Always return pending until timeout
+    const mockGetToken = vi
+      .fn()
+      .mockRejectedValue({
+        response: { data: { error: 'authorization_pending' } },
+      });
+
+    const mockOAuth2ClientInstance = {
+      getDeviceCode: mockGetDeviceCode,
+      getToken: mockGetToken,
+      setCredentials: vi.fn(),
+    } as unknown as OAuth2Client;
+
+    vi.mocked(OAuth2Client).mockImplementation(
+      () => mockOAuth2ClientInstance,
+    );
+    vi.spyOn(global, 'setTimeout').mockImplementation((fn, timeout) => {
+      // Call immediately for testing, but respect the "attempts" logic
+      if (timeout && timeout > 0) {
+        fn();
+      }
+      return 0 as unknown as NodeJS.Timeout;
+    });
+
+    await expect(getOauthClient(true)).rejects.toThrow(
+      'Authentication timed out.',
+    );
+
+    expect(mockGetDeviceCode).toHaveBeenCalled();
+    // Max attempts = expires_in / interval = 2 / 1 = 2. It polls, then tries again.
+    // The first call is immediate due to the mock, subsequent calls are also immediate.
+    // The check for maxAttempts happens *before* the API call.
+    // So, it will attempt, increment, attempt, increment, then fail on the next check.
+    expect(mockGetToken.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    vi.mocked(global.setTimeout).mockRestore();
+  });
+
+  it('should handle device code login error (e.g. access_denied)', async () => {
+    const mockDeviceCodeResponse = {
+      data: {
+        device_code: 'test-device-code-error',
+        user_code: 'TEST-USER-CODE-ERROR',
+        verification_url: 'https://example.com/device_error',
+        expires_in: 1800,
+        interval: 1,
+      },
+    };
+    const mockError = {
+      response: {
+        data: { error: 'access_denied', error_description: 'User denied access' },
+      },
+    };
+
+    const mockGetDeviceCode = vi.fn().mockResolvedValue(mockDeviceCodeResponse);
+    const mockGetToken = vi.fn().mockRejectedValue(mockError);
+
+    const mockOAuth2ClientInstance = {
+      getDeviceCode: mockGetDeviceCode,
+      getToken: mockGetToken,
+      setCredentials: vi.fn(),
+    } as unknown as OAuth2Client;
+
+    vi.mocked(OAuth2Client).mockImplementation(
+      () => mockOAuth2ClientInstance,
+    );
+    vi.spyOn(global, 'setTimeout').mockImplementation((fn) => {
+      fn();
+      return 0 as unknown as NodeJS.Timeout;
+    });
+
+    await expect(getOauthClient(true)).rejects.toThrow(
+      'Error during authentication: User denied access',
+    );
+
+    expect(mockGetDeviceCode).toHaveBeenCalled();
+    expect(mockGetToken).toHaveBeenCalledTimes(1);
+
+    vi.mocked(global.setTimeout).mockRestore();
   });
 });
